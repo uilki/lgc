@@ -22,7 +22,7 @@ type Hasher interface {
 
 type hasher uint8
 
-// Error
+// Errors
 var (
 	ErrEmptyPassword       = errors.New("empty password provided")
 	ErrUnsupportedHashType = errors.New("hash: unsupported hash key")
