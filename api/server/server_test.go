@@ -2,12 +2,14 @@ package server
 
 import (
 	"bytes"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/hasher"
+	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 func TestHandleCreate(t *testing.T) {
@@ -18,8 +20,8 @@ func TestHandleCreate(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	var s server
-	s.user = make(map[string]*userInfo)
-	s.logger = *log.Default()
+	s.user = make(map[uuid.UUID]*userInfo)
+	s.logger = &logger.ServerLogger{Logger: logrus.StandardLogger()}
 
 	rw := httptest.NewRecorder()
 	handler := http.HandlerFunc(s.handleCreate())
@@ -30,8 +32,11 @@ func TestHandleCreate(t *testing.T) {
 		t.Errorf("handler returned wrong status code: got %v want %v",
 			status, http.StatusOK)
 	}
+	var id uuid.UUID
+	for id = range s.user {
+	}
 
-	expectedBody := `{"userName":"john","id":"0"}`
+	expectedBody := `{"userName":"john","id":"` + id.String() + `"}`
 
 	if actualBody := rw.Body.String(); actualBody != expectedBody {
 		t.Errorf("handler returned unexpected body: got %s want %s",
@@ -54,10 +59,11 @@ func TestHandleLogin(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	var s server
-	s.user = make(map[string]*userInfo)
+	s.user = make(map[uuid.UUID]*userInfo)
 	h, _ := hasher.HashPassword("12345678")
-	s.user["john"] = &userInfo{"0", h, false}
-	s.logger = *log.Default()
+	id := uuid.New()
+	s.user[id] = &userInfo{name: "john", hash: h, logged: false}
+	s.logger = &logger.ServerLogger{Logger: logrus.StandardLogger()}
 
 	rw := httptest.NewRecorder()
 	handler := http.HandlerFunc(s.handleLogin())
@@ -68,8 +74,8 @@ func TestHandleLogin(t *testing.T) {
 		t.Errorf("handler returned wrong status code: got %v want %v",
 			status, http.StatusOK)
 	}
+	expectedBody := []byte(`{"url":"ws://fancy-chat.io/ws\u0026token=` + s.user[id].oneTimeToken + `"}`)
 
-	expectedBody := []byte(`{"url":"ws://fancy-chat.io/ws\u0026token=one-time-token"}`)
 	var actualBody []byte = make([]byte, rw.Body.Len())
 	if rw.Body.Read(actualBody); string(actualBody) != string(expectedBody) {
 		t.Errorf("handler returned unexpected body: got %v want %v",

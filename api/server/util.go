@@ -1,11 +1,12 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,9 +14,10 @@ import (
 
 // Types
 type userInfo struct {
-	id     string
-	hash   string
-	logged bool
+	name         string
+	hash         string
+	logged       bool
+	oneTimeToken string
 }
 
 type UserCreds struct {
@@ -36,6 +38,10 @@ type LoginUserResponse struct {
 	Url string `json:"url"`
 }
 
+type ActiveUsersResponce struct {
+	ActiveUsers []string `json:"activeusers"`
+}
+
 // Errors
 var (
 	ErrInternalServerError       = errors.New("internal server error")
@@ -45,6 +51,9 @@ var (
 	ErrUnsupportedMethod         = errors.New("unsupported method")
 	ErrUserAlreadyRegistered     = errors.New("user already registered")
 	ErrUserAlreadyLoggedIn       = errors.New("user already logged in")
+	ErrLogicError                = errors.New("internal logic error")
+	ErrOneTimeTokenEmty          = errors.New("onetime tokem empty")
+	ErrInvalidOneTimeToken       = errors.New("invalid onetime token")
 )
 
 func marshalValue[T any](v T) ([]byte, error) {
@@ -76,7 +85,7 @@ func responseFailure(w http.ResponseWriter, err error) {
 	case ErrUserAlreadyRegistered, ErrInternalServerError:
 		status = http.StatusInternalServerError
 	default:
-		log.Fatalln("Unknown error")
+		panic(ErrLogicError)
 	}
 	w.WriteHeader(status)
 	fmt.Fprint(w, err)
@@ -105,10 +114,30 @@ func validateRequest(r *http.Request) (UserCreds, error) {
 	return obj, nil
 }
 
+func validateUpgrade(r *http.Request) (string, error) {
+	if r.Method != "GET" {
+		return "", ErrUnsupportedMethod
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		return "", ErrEmptyUsernameOrId
+	}
+
+	return token, nil
+}
+
 func getXRLimit() string {
 	return strconv.Itoa(100)
 }
 
-func getXExpiresAfter() string {
-	return time.Unix(time.Now().Unix(), 0).Add(time.Hour * 3).UTC().String()
+func getXExpiresAfter() time.Time {
+	return time.Unix(time.Now().Unix(), 0).Add(time.Minute * 3).UTC()
+}
+
+func generateSecureToken(length int) string {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }
