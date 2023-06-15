@@ -2,10 +2,16 @@ package server
 
 import "net/http"
 
-type Router struct {
-	routes map[string]http.HandlerFunc
+type routeInfo struct {
+	route   string
+	method  string
+	headers *[]string
 }
 
-func (r *Router) HandleFunc(route string, h http.HandlerFunc) {
-	r.routes[route] = h
+type Router struct {
+	routes map[routeInfo]http.HandlerFunc
+}
+
+func (r *Router) HandleFunc(route, method string, headers []string, h http.HandlerFunc) {
+	r.routes[routeInfo{route, method, &headers}] = h
 }

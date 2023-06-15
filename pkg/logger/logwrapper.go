@@ -10,16 +10,24 @@ type ServerLogger struct {
 	*logrus.Logger
 }
 
+type Logger interface {
+	LogError(e interface{})
+	LogInfo(info interface{})
+	LogDebug(message string, arg ...any)
+}
+
 func NewLogger() *ServerLogger {
 	logger := &ServerLogger{logrus.New()}
-	f, err := os.OpenFile("chat-server-go.log", os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0664)
-	if err != nil {
-		f = os.Stdout
+
+	logger.SetOutput(os.Stdout)
+
+	logger.Formatter = &logrus.TextFormatter{
+		ForceColors:            true,
+		FullTimestamp:          true,
+		DisableLevelTruncation: true,
+		PadLevelText:           true,
+		TimestampFormat:        "02/Jan/2006:15:04:05 -0700",
 	}
-
-	logger.SetOutput(f)
-
-	logger.Formatter = &logrus.TextFormatter{ForceColors: true, FullTimestamp: true, DisableLevelTruncation: true, PadLevelText: true}
 	return logger
 }
 

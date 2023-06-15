@@ -3,32 +3,58 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"sort"
+	"time"
 
 	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/hasher"
 	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
 	"github.com/google/uuid"
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
-type server struct {
+const (
+	ERROR = iota
+	INFO
+	DEBUG
+)
+
+type Server struct {
 	url        string
 	user       map[uuid.UUID]*userInfo
 	router     Router
 	history    backlog
 	controller *dispatcher
-	logger     *logger.ServerLogger
+	logger     logger.Logger
 }
 
-var defaultServer server
+var defaultServer Server
 
-func (s *server) routes() {
-	s.router.HandleFunc("/v1/user", s.handleCreate())
-	s.router.HandleFunc("/v1/user/login", s.handleLogin())
-	s.router.HandleFunc("/v1/ws", s.handleConnect())
-	s.router.HandleFunc("/v1/users", s.handleActiveUsers())
+func (s *Server) routes() {
+	s.router.HandleFunc("/v1/user", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleCreate())
+	s.router.HandleFunc("/v1/user/login", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleLogin())
+	s.router.HandleFunc("/v1/ws", http.MethodGet, nil, s.handleConnect())
+	s.router.HandleFunc("/v1/users", http.MethodGet, nil, s.handleActiveUsers())
 }
 
-func (s *server) findUser(uname string) (uuid.UUID, error) {
+func (s *Server) log(level int, message string, arg ...any) {
+	if s.logger != nil {
+		switch level {
+		case ERROR:
+			s.logger.LogError(message)
+		case INFO:
+			s.logger.LogInfo(message)
+		case DEBUG:
+			s.logger.LogDebug(message, arg...)
+		default:
+			panic("unknown log level")
+		}
+	}
+}
+
+func (s *Server) findUser(uname string) (uuid.UUID, error) {
 	for id, info := range s.user {
 		if info.name == uname {
 			return id, nil
@@ -37,7 +63,7 @@ func (s *server) findUser(uname string) (uuid.UUID, error) {
 	return uuid.UUID{}, ErrInvalidUsernameOrPassword
 }
 
-func (s *server) addUser(uname, passwd string) (respBody []byte, err error) {
+func (s *Server) addUser(uname, passwd string) (respBody []byte, err error) {
 	h, err := hasher.HashPassword(passwd)
 	if err != nil {
 		return nil, ErrInternalServerError
@@ -57,12 +83,11 @@ func (s *server) addUser(uname, passwd string) (respBody []byte, err error) {
 	return respBody, nil
 }
 
-func (s *server) handleCreate() http.HandlerFunc {
+func (s *Server) handleCreate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.logger.LogInfo(r.Method + " " + r.Host + r.RequestURI)
 		obj, err := validateRequest(r)
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
 			responseFailure(w, err)
 			return
 		}
@@ -70,7 +95,7 @@ func (s *server) handleCreate() http.HandlerFunc {
 		resp, err := s.addUser(obj.UserName, obj.Password)
 
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
 			responseFailure(w, err)
 			return
 		}
@@ -81,84 +106,81 @@ func (s *server) handleCreate() http.HandlerFunc {
 	}
 }
 
-func (s *server) loginUser(uname, passwd string) (respBody []byte, err error) {
-	var id uuid.UUID
+func (s *Server) loginUser(uname, passwd string) (respBody []byte, id uuid.UUID, err error) {
 	if id, err = s.findUser(uname); err != nil {
-		return nil, err
+		return nil, uuid.UUID{}, err
 	}
 	if !hasher.CheckPasswordHash(passwd, s.user[id].hash) {
-		return nil, ErrInvalidUsernameOrPassword
+		return nil, uuid.UUID{}, ErrInvalidUsernameOrPassword
 	}
 
 	if s.user[id].logged {
-		return nil, ErrUserAlreadyLoggedIn
+		return nil, uuid.UUID{}, ErrUserAlreadyLoggedIn
 	}
 
 	s.user[id].oneTimeToken = generateSecureToken(64)
+	s.user[id].expiresAfter = getXExpiresAfter()
 
-	url := fmt.Sprintf("ws://fancy-chat.io/ws&token=%s", s.user[id].oneTimeToken)
+	url := fmt.Sprintf("ws://%s/ws&token=%s", getLocalIP(), s.user[id].oneTimeToken)
 	if respBody, err = marshalValue(LoginUserResponse{url}); err != nil {
-		return nil, err
+		return nil, uuid.UUID{}, err
 	}
 
 	s.user[id].logged = true
-	return respBody, nil
+	return respBody, id, nil
 }
 
-func (s *server) handleLogin() http.HandlerFunc {
+func (s *Server) handleLogin() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.logger.LogInfo(r.Method + " " + r.Host + r.RequestURI)
 		obj, err := validateRequest(r)
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
 			responseFailure(w, err)
 			return
 		}
 
-		resp, err := s.loginUser(obj.UserName, obj.Password)
+		resp, id, err := s.loginUser(obj.UserName, obj.Password)
 
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
 			responseFailure(w, err)
 			return
 		}
 
 		w.Header().Add("X-Rate-Limit", getXRLimit())
-		w.Header().Add("X-Expires-After", getXExpiresAfter().String())
+		w.Header().Add("X-Expires-After", s.user[id].expiresAfter.String())
 		w.Header().Add("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, string(resp))
 	}
 }
 
-func (s *server) validateUser(token string) (uuid.UUID, error) {
+func (s *Server) validateUser(token string) (uuid.UUID, error) {
 	for n, v := range s.user {
-		if v.oneTimeToken != "" && v.oneTimeToken == token {
+		if v.oneTimeToken != "" && v.oneTimeToken == token && v.expiresAfter.After(time.Now()) {
 			return n, nil
 		}
 	}
 	return uuid.UUID{}, ErrInvalidOneTimeToken
 }
 
-func (s *server) sendTail(c *participant) {
+func (s *Server) sendTail(c *participant) {
 	for _, m := range s.history.tail() {
 		message, err := marshalValue(m)
 
 		if err != nil {
-			c.logger.LogError(err)
+			s.log(ERROR, err.Error())
 		}
 
 		c.mes <- message
 	}
 }
 
-func (s *server) handleConnect() http.HandlerFunc {
+func (s *Server) handleConnect() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.logger.LogInfo(r.Method + " " + r.Host + r.RequestURI)
-
 		token, err := validateUpgrade(r)
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
 			responseFailure(w, err)
 			return
 		}
@@ -170,7 +192,7 @@ func (s *server) handleConnect() http.HandlerFunc {
 			CheckOrigin: func(r *http.Request) bool {
 				id, err = s.validateUser(token)
 				if err != nil {
-					s.logger.LogError(err)
+					s.log(ERROR, err.Error())
 					return false
 				}
 				s.user[id].oneTimeToken = ""
@@ -182,36 +204,28 @@ func (s *server) handleConnect() http.HandlerFunc {
 		conn, err = u.Upgrade(w, r, nil)
 
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
+			responseFailure(w, err)
 			return
 		}
 
 		newParticipant := &participant{
-			name:       s.user[id].name,
-			controller: s.controller,
-			history:    &s.history,
-			conn:       conn,
-			mes:        make(chan []byte, 256),
-			logger:     s.logger,
+			name: s.user[id].name,
+			srv:  s,
+			conn: conn,
+			mes:  make(chan []byte, 256),
 		}
 
 		s.controller.addParticipant <- newParticipant
 		s.sendTail(newParticipant)
 
-		go newParticipant.readMessges()
+		go newParticipant.readMessages()
 		go newParticipant.writeMessages()
 	}
 }
 
-func (s *server) handleActiveUsers() http.HandlerFunc {
+func (s *Server) handleActiveUsers() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.logger.LogInfo(r.Method + " " + r.Host + r.RequestURI)
-		if r.Method != "GET" {
-			s.logger.LogError(ErrUnsupportedMethod)
-			responseFailure(w, ErrUnsupportedMethod)
-			return
-		}
-
 		activeUsers := ActiveUsersResponce{ActiveUsers: make([]string, len(s.controller.chatroom))}
 		i := 0
 		for c := range s.controller.chatroom {
@@ -219,9 +233,11 @@ func (s *server) handleActiveUsers() http.HandlerFunc {
 			i++
 		}
 
+		sort.Slice(activeUsers.ActiveUsers, func(i, j int) bool { return activeUsers.ActiveUsers[i] < activeUsers.ActiveUsers[j] })
+
 		responceBody, err := marshalValue(activeUsers)
 		if err != nil {
-			s.logger.LogError(err)
+			s.log(ERROR, err.Error())
 			responseFailure(w, err)
 			return
 		}
@@ -233,20 +249,34 @@ func (s *server) handleActiveUsers() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handlePanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.log(ERROR, fmt.Sprintf("Panic call occured: %v", r))
+				responseFailure(w, ErrInternalServerError)
+			}
+		}()
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func init() {
-	defaultServer.logger = logger.NewLogger()
-	defaultServer.url = ":8080"
+	defaultServer.logger = logger.Logger(logger.NewLogger())
+	defaultServer.url = getLocalIP() + ":8080"
 	defaultServer.user = make(map[uuid.UUID]*userInfo)
-	defaultServer.router.routes = make(map[string]http.HandlerFunc)
+	defaultServer.router.routes = make(map[routeInfo]http.HandlerFunc)
 	defaultServer.routes()
 	defaultServer.controller = newDispatcher()
-	go defaultServer.controller.run()
-	defaultServer.logger.LogInfo("Initialized")
 }
 
 func Run() error {
-	for r, h := range defaultServer.router.routes {
-		http.HandleFunc(r, h)
+	go defaultServer.controller.run()
+	router := mux.NewRouter()
+	for route, handler := range defaultServer.router.routes {
+		router.Handle(route.route, defaultServer.handlePanic(handler)).Methods(route.method).Headers(*route.headers...)
 	}
-	return http.ListenAndServe(defaultServer.url, nil)
+	defaultServer.log(INFO, "Starting server....")
+	return http.ListenAndServe(defaultServer.url, handlers.LoggingHandler(os.Stdout, router))
 }

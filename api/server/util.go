@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,6 +19,7 @@ type userInfo struct {
 	hash         string
 	logged       bool
 	oneTimeToken string
+	expiresAfter time.Time
 }
 
 type UserCreds struct {
@@ -45,14 +47,10 @@ type ActiveUsersResponce struct {
 // Errors
 var (
 	ErrInternalServerError       = errors.New("internal server error")
-	ErrEmptyUsernameOrId         = errors.New("bad request, empty username or id")
+	ErrEmptyUsernameOrId         = errors.New("empty username or id")
 	ErrInvalidUsernameOrPassword = errors.New("invalid username or password")
-	ErrUnsupportedContentType    = errors.New("unsupported content type")
-	ErrUnsupportedMethod         = errors.New("unsupported method")
 	ErrUserAlreadyRegistered     = errors.New("user already registered")
 	ErrUserAlreadyLoggedIn       = errors.New("user already logged in")
-	ErrLogicError                = errors.New("internal logic error")
-	ErrOneTimeTokenEmty          = errors.New("onetime tokem empty")
 	ErrInvalidOneTimeToken       = errors.New("invalid onetime token")
 )
 
@@ -64,42 +62,25 @@ func unmarshalCreds(body io.ReadCloser) (UserCreds, error) {
 	b, err := io.ReadAll(body)
 
 	if err != nil {
-		return UserCreds{}, ErrInternalServerError
+		return UserCreds{}, err
 	}
 
 	var r UserCreds
 	err = json.Unmarshal(b, &r)
 
 	if err != nil {
-		return UserCreds{}, ErrInternalServerError
+		return UserCreds{}, err
 	}
 
 	return r, nil
 }
 
-func responseFailure(w http.ResponseWriter, err error) {
-	var status int
-	switch err {
-	case ErrUserAlreadyLoggedIn, ErrInvalidUsernameOrPassword, ErrUnsupportedMethod, ErrUnsupportedContentType, ErrEmptyUsernameOrId:
-		status = http.StatusBadRequest
-	case ErrUserAlreadyRegistered, ErrInternalServerError:
-		status = http.StatusInternalServerError
-	default:
-		panic(ErrLogicError)
-	}
-	w.WriteHeader(status)
+func responseFailure(w http.ResponseWriter, err interface{}) {
+	w.WriteHeader(http.StatusBadRequest)
 	fmt.Fprint(w, err)
 }
 
 func validateRequest(r *http.Request) (UserCreds, error) {
-	if r.Method != "POST" {
-		return UserCreds{}, ErrUnsupportedMethod
-	}
-
-	if r.Header.Get("Content-Type") != "application/json" {
-		return UserCreds{}, ErrUnsupportedContentType
-	}
-
 	defer r.Body.Close()
 
 	obj, err := unmarshalCreds(r.Body)
@@ -115,12 +96,9 @@ func validateRequest(r *http.Request) (UserCreds, error) {
 }
 
 func validateUpgrade(r *http.Request) (string, error) {
-	if r.Method != "GET" {
-		return "", ErrUnsupportedMethod
-	}
 	token := r.URL.Query().Get("token")
 	if token == "" {
-		return "", ErrEmptyUsernameOrId
+		return "", ErrInvalidOneTimeToken
 	}
 
 	return token, nil
@@ -140,4 +118,19 @@ func generateSecureToken(length int) string {
 		return ""
 	}
 	return hex.EncodeToString(b)
+}
+
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return ""
 }

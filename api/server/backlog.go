@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	backLogMaxLen = 100
+	backLogMaxLen = 1000000
 	backLogTail   = 10
 )
 
@@ -26,7 +26,7 @@ func (b *backlog) pushBack(m Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if len(b.data) > backLogMaxLen {
+	if len(b.data) >= backLogMaxLen {
 		b.data = b.data[1:]
 	}
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"time"
 
-	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
 	"github.com/gorilla/websocket"
 )
 
@@ -14,17 +13,15 @@ var (
 )
 
 type participant struct {
-	name       string
-	controller *dispatcher
-	history    *backlog
-	conn       *websocket.Conn
-	mes        chan []byte
-	logger     *logger.ServerLogger
+	name string
+	conn *websocket.Conn
+	mes  chan []byte
+	srv  *Server
 }
 
-func (c *participant) readMessges() {
+func (c *participant) readMessages() {
 	defer func() {
-		c.controller.removePaticipant <- c
+		c.srv.controller.removePaticipant <- c
 		c.conn.Close()
 	}()
 
@@ -39,7 +36,7 @@ func (c *participant) readMessges() {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.logger.LogError(err)
+				c.srv.log(ERROR, err.Error())
 			}
 			break
 		}
@@ -50,15 +47,15 @@ func (c *participant) readMessges() {
 			Message:   string(message),
 		}
 
-		c.history.pushBack(backlogMes)
+		c.srv.history.pushBack(backlogMes)
 
 		message, err = marshalValue(backlogMes)
 		if err != nil {
-			c.logger.LogError(err)
+			c.srv.log(ERROR, err.Error())
 			continue
 		}
 
-		c.controller.broadcast <- bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
+		c.srv.controller.broadcast <- bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
 	}
 }
 
@@ -79,7 +76,7 @@ func (c *participant) writeMessages() {
 
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
-				c.logger.LogError(err)
+				c.srv.log(ERROR, err.Error())
 				return
 			}
 			w.Write(message)
@@ -96,7 +93,7 @@ func (c *participant) writeMessages() {
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(time.Second * 3))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				c.logger.LogError(err)
+				c.srv.log(ERROR, err.Error())
 				return
 			}
 		}
