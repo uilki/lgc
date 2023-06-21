@@ -11,6 +11,11 @@ const (
 	backLogTail   = 10
 )
 
+type Backlogger interface {
+	GetHistory() ([]Message, error)
+	Update(Message) error
+	Close()
+}
 type Message struct {
 	TimeStamp time.Time `json:"timestamp"`
 	Name      string    `json:"name"`
@@ -20,6 +25,17 @@ type Message struct {
 type backlog struct {
 	mu   sync.Mutex
 	data []Message
+}
+
+func (b *backlog) GetHistory() ([]Message, error) {
+	return b.tail(), nil
+}
+
+func (b *backlog) Update(m Message) error {
+	b.pushBack(m)
+	return nil
+}
+func (b *backlog) Close() {
 }
 
 func (b *backlog) pushBack(m Message) {

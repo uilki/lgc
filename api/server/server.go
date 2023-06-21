@@ -25,7 +25,7 @@ type Server struct {
 	url        string
 	user       map[uuid.UUID]*userInfo
 	router     Router
-	history    backlog
+	history    Backlogger
 	controller *dispatcher
 	logger     logger.Logger
 }
@@ -165,7 +165,13 @@ func (s *Server) validateUser(token string) (uuid.UUID, error) {
 }
 
 func (s *Server) sendTail(c *participant) {
-	for _, m := range s.history.tail() {
+	messages, err := s.history.GetHistory()
+	if err != nil {
+		s.log(ERROR, err.Error())
+		return
+	}
+
+	for _, m := range messages {
 		message, err := marshalValue(m)
 
 		if err != nil {
@@ -267,11 +273,24 @@ func init() {
 	defaultServer.url = getLocalIP() + ":8080"
 	defaultServer.user = make(map[uuid.UUID]*userInfo)
 	defaultServer.router.routes = make(map[routeInfo]http.HandlerFunc)
+
 	defaultServer.routes()
 	defaultServer.controller = newDispatcher()
 }
 
-func Run() error {
+func Run(pass string) error {
+	if pass != "" {
+		history, err := NewSqlBacklog(pass)
+		if err != nil {
+			panic(err)
+		}
+
+		defaultServer.history = Backlogger(history)
+	} else {
+		defaultServer.history = Backlogger(&backlog{})
+	}
+
+	defer defaultServer.history.Close()
 	go defaultServer.controller.run()
 	router := mux.NewRouter()
 	for route, handler := range defaultServer.router.routes {

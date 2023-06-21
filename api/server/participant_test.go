@@ -58,7 +58,8 @@ func TestReadWriteMessages(t *testing.T) {
 	}
 
 	// and into backlog
-	if m := p.srv.history.data[len(p.srv.history.data)-1].Message; m != testMessage {
+	messages, _ := p.srv.history.GetHistory()
+	if m := messages[len(messages)-1].Message; m != testMessage {
 		t.Errorf(`expected "%s" got "%s"`, testMessage, m)
 	}
 }

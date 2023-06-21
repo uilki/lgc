@@ -47,7 +47,9 @@ func (c *participant) readMessages() {
 			Message:   string(message),
 		}
 
-		c.srv.history.pushBack(backlogMes)
+		if err = c.srv.history.Update(backlogMes); err != nil {
+			c.srv.log(ERROR, err.Error())
+		}
 
 		message, err = marshalValue(backlogMes)
 		if err != nil {
