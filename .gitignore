@@ -1,0 +1,12 @@
+# binary
+bin/*
+# logs
+*.log
+# vs files
+*.json
+
+*.out
+*.html
+
+# keep folder
+!bin/.gitkeep
