@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -16,13 +17,16 @@ type participant struct {
 	name string
 	conn *websocket.Conn
 	mes  chan []byte
-	srv  *Server
 }
 
-func (c *participant) readMessages() {
+func (c *participant) readMessages(ctx context.Context) {
+	srv := ctx.Value(serverKey).(*Server)
+	controller := ctx.Value(controllerKey).(*dispatcher)
+
 	defer func() {
-		c.srv.controller.removePaticipant <- c
+		controller.removePaticipant <- c
 		c.conn.Close()
+		srv.wg.Done()
 	}()
 
 	c.conn.SetReadLimit(512)
@@ -34,9 +38,10 @@ func (c *participant) readMessages() {
 
 	for {
 		_, message, err := c.conn.ReadMessage()
+
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.srv.log(ERROR, err.Error())
+				srv.log(ERROR, err.Error())
 			}
 			break
 		}
@@ -47,26 +52,28 @@ func (c *participant) readMessages() {
 			Message:   string(message),
 		}
 
-		if err = c.srv.history.Update(backlogMes); err != nil {
-			c.srv.log(ERROR, err.Error())
+		if err = srv.history.Update(backlogMes); err != nil {
+			srv.log(ERROR, err.Error())
 		}
 
 		message, err = marshalValue(backlogMes)
 		if err != nil {
-			c.srv.log(ERROR, err.Error())
+			srv.log(ERROR, err.Error())
 			continue
 		}
 
-		c.srv.controller.broadcast <- bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
+		controller.broadcast <- bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
 	}
 }
 
-func (c *participant) writeMessages() {
+func (c *participant) writeMessages(ctx context.Context) {
 	ticker := time.NewTicker(time.Second * 50)
 	defer func() {
 		ticker.Stop()
 		c.conn.Close()
 	}()
+	srv := ctx.Value(serverKey).(*Server)
+	defer srv.wg.Done()
 	for {
 		select {
 		case message, ok := <-c.mes:
@@ -78,7 +85,7 @@ func (c *participant) writeMessages() {
 
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
-				c.srv.log(ERROR, err.Error())
+				srv.log(ERROR, err.Error())
 				return
 			}
 			w.Write(message)
@@ -95,9 +102,12 @@ func (c *participant) writeMessages() {
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(time.Second * 3))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				c.srv.log(ERROR, err.Error())
+				srv.log(ERROR, err.Error())
 				return
 			}
+		case <-ctx.Done():
+			c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
 		}
 	}
 }

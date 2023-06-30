@@ -11,11 +11,6 @@ const (
 	backLogTail   = 10
 )
 
-type Backlogger interface {
-	GetHistory() ([]Message, error)
-	Update(Message) error
-	Close()
-}
 type Message struct {
 	TimeStamp time.Time `json:"timestamp"`
 	Name      string    `json:"name"`

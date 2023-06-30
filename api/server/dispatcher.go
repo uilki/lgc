@@ -1,5 +1,10 @@
 package server
 
+import (
+	"context"
+	"os"
+)
+
 type dispatcher struct {
 	chatroom         map[*participant]bool
 	broadcast        chan []byte
@@ -16,7 +21,7 @@ func newDispatcher() *dispatcher {
 	}
 }
 
-func (d *dispatcher) run() {
+func (d *dispatcher) run(ctx context.Context) {
 	for {
 		select {
 		case participant := <-d.addParticipant:
@@ -32,6 +37,9 @@ func (d *dispatcher) run() {
 					delete(d.chatroom, participant)
 				}
 			}
+		case <-ctx.Done():
+			ctx.Value(serverKey).(*Server).wg.Wait()
+			os.Exit(0)
 		}
 	}
 }

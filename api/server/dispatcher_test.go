@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -13,7 +14,10 @@ func TestRun(t *testing.T) {
 		removePaticipant: make(chan *participant),
 	}
 
-	go d.run()
+	ctx, _ := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, serverKey, &Server{})
+
+	go d.run(ctx)
 	firstParticipant := participant{mes: make(chan []byte, 256), name: "john"}
 	secondParticipant := participant{mes: make(chan []byte, 256), name: "kate"}
 	d.addParticipant <- &firstParticipant
