@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,25 +41,30 @@ func TestReadWriteMessages(t *testing.T) {
 	defer c.Close()
 
 	p := participant{
-		srv:  &Server{controller: newDispatcher()},
 		conn: c,
 		mes:  make(chan []byte, 256),
 	}
-	go p.readMessages()
-	go p.writeMessages()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(context.WithValue(ctx, serverKey, &Server{history: Backlogger(&backlog{})}), controllerKey, newDispatcher())
+
+	go p.readMessages(ctx)
+	ctx.Value(serverKey).(*Server).wg.Add(1)
+	go p.writeMessages(ctx)
 
 	// Write a message
 	testMessage := "data"
 	p.mes <- []byte(testMessage)
 
 	// when readMessages receives message it puts it into broadcast channel
-	_, ok := <-p.srv.controller.broadcast
+	_, ok := <-ctx.Value(controllerKey).(*dispatcher).broadcast
 	if !ok {
 		t.Fatal("Can't read broadcast chan")
 	}
 
 	// and into backlog
-	messages, _ := p.srv.history.GetHistory()
+	messages, _ := ctx.Value(serverKey).(*Server).history.GetHistory()
 	if m := messages[len(messages)-1].Message; m != testMessage {
 		t.Errorf(`expected "%s" got "%s"`, testMessage, m)
 	}

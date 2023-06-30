@@ -1,10 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
+	"sync"
+	"syscall"
 	"time"
 
 	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/hasher"
@@ -22,21 +26,28 @@ const (
 )
 
 type Server struct {
-	url        string
-	user       map[uuid.UUID]*userInfo
-	router     Router
-	history    Backlogger
-	controller *dispatcher
-	logger     logger.Logger
+	url     string
+	user    map[uuid.UUID]*userInfo
+	router  Router
+	history Backlogger
+	logger  logger.Logger
+	wg      sync.WaitGroup
 }
+
+type key int
+
+const (
+	serverKey     key = 0
+	controllerKey key = 1
+)
 
 var defaultServer Server
 
-func (s *Server) routes() {
-	s.router.HandleFunc("/v1/user", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleCreate())
-	s.router.HandleFunc("/v1/user/login", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleLogin())
-	s.router.HandleFunc("/v1/ws", http.MethodGet, nil, s.handleConnect())
-	s.router.HandleFunc("/v1/users", http.MethodGet, nil, s.handleActiveUsers())
+func (s *Server) routes(ctx context.Context) {
+	s.router.HandleFunc("/v1/user", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleCreate(ctx))
+	s.router.HandleFunc("/v1/user/login", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleLogin(ctx))
+	s.router.HandleFunc("/v1/ws", http.MethodGet, nil, s.handleConnect(ctx))
+	s.router.HandleFunc("/v1/users", http.MethodGet, nil, s.handleActiveUsers(ctx))
 }
 
 func (s *Server) log(level int, message string, arg ...any) {
@@ -83,7 +94,7 @@ func (s *Server) addUser(uname, passwd string) (respBody []byte, err error) {
 	return respBody, nil
 }
 
-func (s *Server) handleCreate() http.HandlerFunc {
+func (s *Server) handleCreate(_ context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		obj, err := validateRequest(r)
 		if err != nil {
@@ -130,7 +141,7 @@ func (s *Server) loginUser(uname, passwd string) (respBody []byte, id uuid.UUID,
 	return respBody, id, nil
 }
 
-func (s *Server) handleLogin() http.HandlerFunc {
+func (s *Server) handleLogin(_ context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		obj, err := validateRequest(r)
 		if err != nil {
@@ -182,7 +193,7 @@ func (s *Server) sendTail(c *participant) {
 	}
 }
 
-func (s *Server) handleConnect() http.HandlerFunc {
+func (s *Server) handleConnect(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, err := validateUpgrade(r)
 		if err != nil {
@@ -217,24 +228,26 @@ func (s *Server) handleConnect() http.HandlerFunc {
 
 		newParticipant := &participant{
 			name: s.user[id].name,
-			srv:  s,
 			conn: conn,
 			mes:  make(chan []byte, 256),
 		}
 
-		s.controller.addParticipant <- newParticipant
+		ctx.Value(controllerKey).(*dispatcher).addParticipant <- newParticipant
 		s.sendTail(newParticipant)
 
-		go newParticipant.readMessages()
-		go newParticipant.writeMessages()
+		s.wg.Add(1)
+		go newParticipant.readMessages(ctx)
+		s.wg.Add(1)
+		go newParticipant.writeMessages(ctx)
 	}
 }
 
-func (s *Server) handleActiveUsers() http.HandlerFunc {
+func (s *Server) handleActiveUsers(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		activeUsers := ActiveUsersResponce{ActiveUsers: make([]string, len(s.controller.chatroom))}
+		controller := ctx.Value(controllerKey).(*dispatcher)
+		activeUsers := ActiveUsersResponce{ActiveUsers: make([]string, len(controller.chatroom))}
 		i := 0
-		for c := range s.controller.chatroom {
+		for c := range controller.chatroom {
 			activeUsers.ActiveUsers[i] = c.name
 			i++
 		}
@@ -273,29 +286,45 @@ func init() {
 	defaultServer.url = getLocalIP() + ":8080"
 	defaultServer.user = make(map[uuid.UUID]*userInfo)
 	defaultServer.router.routes = make(map[routeInfo]http.HandlerFunc)
-
-	defaultServer.routes()
-	defaultServer.controller = newDispatcher()
 }
 
 func Run(pass string) error {
+	// setup history
 	if pass != "" {
-		history, err := NewSqlBacklog(pass)
+		sqlBacklog, err := NewSqlBacklog(pass)
 		if err != nil {
 			panic(err)
 		}
-
-		defaultServer.history = Backlogger(history)
+		defaultServer.history = Backlogger(sqlBacklog)
 	} else {
 		defaultServer.history = Backlogger(&backlog{})
 	}
-
 	defer defaultServer.history.Close()
-	go defaultServer.controller.run()
+
+	// setup shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	exit := make(chan os.Signal, 1)
+	signal.Notify(exit, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-exit
+		ctx.Value(serverKey).(*Server).log(INFO, fmt.Sprintf("Signal %v caught", sig))
+		cancel()
+	}()
+
+	// run controller
+	ctx = context.WithValue(ctx, serverKey, &defaultServer)
+	controller := newDispatcher()
+	go controller.run(ctx)
+
+	// setup routes
+	ctx = context.WithValue(ctx, controllerKey, controller)
+	defaultServer.routes(ctx)
 	router := mux.NewRouter()
 	for route, handler := range defaultServer.router.routes {
 		router.Handle(route.route, defaultServer.handlePanic(handler)).Methods(route.method).Headers(*route.headers...)
 	}
-	defaultServer.log(INFO, "Starting server....")
+
+	// run sserver
+	defaultServer.log(INFO, fmt.Sprintf("Starting server on %s", defaultServer.url))
 	return http.ListenAndServe(defaultServer.url, handlers.LoggingHandler(os.Stdout, router))
 }

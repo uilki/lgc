@@ -2,9 +2,13 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,7 +40,7 @@ func TestHandleCreate(t *testing.T) {
 	var s Server
 	s.user = make(map[uuid.UUID]*userInfo)
 
-	handler := http.HandlerFunc(s.handleCreate())
+	handler := http.HandlerFunc(s.handleCreate(context.Background()))
 
 	// valid request
 	testCase = "handleCreate, valid request"
@@ -105,7 +109,7 @@ func TestHandleLogin(t *testing.T) {
 	id := uuid.New()
 	s.user[id] = &userInfo{name: "john", hash: h, logged: false}
 
-	handler := http.HandlerFunc(s.handleLogin())
+	handler := http.HandlerFunc(s.handleLogin(context.Background()))
 
 	// valid request
 	testCase = "handleLogin, valid request"
@@ -199,7 +203,11 @@ func TestHandleConnect(t *testing.T) {
 	id := uuid.New()
 	s.user[id] = &userInfo{name: "john", hash: h, logged: false, oneTimeToken: "1", expiresAfter: getXExpiresAfter()}
 
-	handler := http.HandlerFunc(s.handleConnect())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(context.WithValue(ctx, serverKey, &s), controllerKey, newDispatcher())
+
+	handler := http.HandlerFunc(s.handleConnect(ctx))
 
 	// token not provided
 	req, err := http.NewRequest(http.MethodGet, "http://169.254.16.78:8080/v1/ws", nil)
@@ -227,12 +235,15 @@ func TestHandleConnect(t *testing.T) {
 
 func TestHandleActiveUsers(t *testing.T) {
 	var s Server
-	s.controller = newDispatcher()
-	s.controller.chatroom = make(map[*participant]bool)
-	s.controller.chatroom[&participant{name: "john"}] = true
-	s.controller.chatroom[&participant{name: "kate"}] = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(context.WithValue(ctx, serverKey, &s), controllerKey, newDispatcher())
 
-	handler := http.HandlerFunc(s.handleActiveUsers())
+	ctx.Value(controllerKey).(*dispatcher).chatroom = make(map[*participant]bool)
+	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{name: "john"}] = true
+	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{name: "kate"}] = true
+
+	handler := http.HandlerFunc(s.handleActiveUsers(ctx))
 
 	testCase := "handleActiveUsers"
 	req, err := http.NewRequest(http.MethodGet, "", nil)
@@ -308,12 +319,14 @@ func TestLog(t *testing.T) {
 
 func TestSendTail(t *testing.T) {
 	var s Server
-	s.history.pushBack(Message{Name: "john"})
-	s.history.pushBack(Message{Name: "kate"})
+	s.history = Backlogger(&backlog{})
+	s.history.Update(Message{Name: "john"})
+	s.history.Update(Message{Name: "kate"})
 	user := participant{mes: make(chan []byte, 256)}
 
 	s.sendTail(&user)
-	for _, m := range s.history.tail() {
+	history, _ := s.history.GetHistory()
+	for _, m := range history {
 		message, _ := marshalValue(m)
 
 		if actual, ok := <-user.mes; !ok || string(message) != string(actual) {
@@ -324,13 +337,16 @@ func TestSendTail(t *testing.T) {
 
 func BenchmarkHandleActiveUsers(b *testing.B) {
 	var s Server
-	s.controller = newDispatcher()
-	s.controller.chatroom = make(map[*participant]bool)
+	controller := newDispatcher()
+	controller.chatroom = make(map[*participant]bool)
 	for i := 0; i < 100; i++ {
-		s.controller.chatroom[&participant{name: strconv.Itoa(i)}] = true
+		controller.chatroom[&participant{name: strconv.Itoa(i)}] = true
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(context.WithValue(ctx, serverKey, &s), controllerKey, controller)
 
-	handler := http.HandlerFunc(s.handleActiveUsers())
+	handler := http.HandlerFunc(s.handleActiveUsers(ctx))
 
 	for i := 0; i < b.N; i++ {
 		req, _ := http.NewRequest(http.MethodGet, "", nil)
@@ -343,19 +359,32 @@ func BenchmarkHandleActiveUsers(b *testing.B) {
 func ExampleRun() {
 	// setup server
 	s := Server{
-		logger:     logger.Logger(logger.NewLogger()), // 	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
-		url:        ":8080",
-		user:       make(map[uuid.UUID]*userInfo),
-		router:     Router{routes: make(map[routeInfo]http.HandlerFunc)},
-		controller: newDispatcher(),
+		logger:  logger.Logger(logger.NewLogger()), // 	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
+		url:     ":8080",
+		user:    make(map[uuid.UUID]*userInfo),
+		router:  Router{routes: make(map[routeInfo]http.HandlerFunc)},
+		history: Backlogger(&backlog{}),
 	}
-	// define routes
-	s.router.HandleFunc("/v1/user", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleCreate())
-	s.router.HandleFunc("/v1/user/login", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleLogin())
-	s.router.HandleFunc("/v1/ws", http.MethodGet, nil, s.handleConnect())
-	s.router.HandleFunc("/v1/users", http.MethodGet, nil, s.handleActiveUsers())
 
-	go s.controller.run() // controller manages broadcasting messages to all clients
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(context.WithValue(ctx, serverKey, &defaultServer), controllerKey, newDispatcher())
+	exit := make(chan os.Signal, 1) // we need to reserve to buffer size 1, so the notifier are not blocked
+	signal.Notify(exit, os.Interrupt, syscall.SIGTERM)
+
+	// define routes
+	s.router.HandleFunc("/v1/user", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleCreate(ctx))
+	s.router.HandleFunc("/v1/user/login", http.MethodPost, []string{"Content-Type", "application/json"}, s.handleLogin(ctx))
+	s.router.HandleFunc("/v1/ws", http.MethodGet, nil, s.handleConnect(ctx))
+	s.router.HandleFunc("/v1/users", http.MethodGet, nil, s.handleActiveUsers(ctx))
+
+	defer defaultServer.history.Close()
+
+	go func() {
+		<-exit
+		cancel()
+	}()
+
+	go ctx.Value(controllerKey).(*dispatcher).run(ctx)
 
 	router := mux.NewRouter() // "github.com/gorilla/mux"
 
