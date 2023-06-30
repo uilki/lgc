@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -240,8 +239,8 @@ func TestHandleActiveUsers(t *testing.T) {
 	ctx = context.WithValue(context.WithValue(ctx, serverKey, &s), controllerKey, newDispatcher())
 
 	ctx.Value(controllerKey).(*dispatcher).chatroom = make(map[*participant]bool)
-	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{name: "john"}] = true
-	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{name: "kate"}] = true
+	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{uuid: uuid.New()}] = true
+	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{uuid: uuid.New()}] = true
 
 	handler := http.HandlerFunc(s.handleActiveUsers(ctx))
 
@@ -340,7 +339,7 @@ func BenchmarkHandleActiveUsers(b *testing.B) {
 	controller := newDispatcher()
 	controller.chatroom = make(map[*participant]bool)
 	for i := 0; i < 100; i++ {
-		controller.chatroom[&participant{name: strconv.Itoa(i)}] = true
+		controller.chatroom[&participant{uuid: uuid.New()}] = true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

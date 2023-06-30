@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -14,7 +15,7 @@ var (
 )
 
 type participant struct {
-	name string
+	uuid uuid.UUID
 	conn *websocket.Conn
 	mes  chan []byte
 }
@@ -48,7 +49,7 @@ func (c *participant) readMessages(ctx context.Context) {
 
 		backlogMes := Message{
 			TimeStamp: time.Unix(time.Now().Unix(), 0).UTC(),
-			Name:      c.name,
+			Name:      srv.user[c.uuid].name,
 			Message:   string(message),
 		}
 
@@ -68,12 +69,12 @@ func (c *participant) readMessages(ctx context.Context) {
 
 func (c *participant) writeMessages(ctx context.Context) {
 	ticker := time.NewTicker(time.Second * 50)
+	srv := ctx.Value(serverKey).(*Server)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+		srv.wg.Done()
 	}()
-	srv := ctx.Value(serverKey).(*Server)
-	defer srv.wg.Done()
+
 	for {
 		select {
 		case message, ok := <-c.mes:

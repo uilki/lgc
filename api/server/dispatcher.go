@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"os"
 )
 
 type dispatcher struct {
@@ -27,6 +26,7 @@ func (d *dispatcher) run(ctx context.Context) {
 		case participant := <-d.addParticipant:
 			d.chatroom[participant] = true
 		case participant := <-d.removePaticipant:
+			ctx.Value(serverKey).(*Server).user[participant.uuid].logged = false
 			delete(d.chatroom, participant)
 		case message := <-d.broadcast:
 			for participant := range d.chatroom {
@@ -38,8 +38,7 @@ func (d *dispatcher) run(ctx context.Context) {
 				}
 			}
 		case <-ctx.Done():
-			ctx.Value(serverKey).(*Server).wg.Wait()
-			os.Exit(0)
+			return
 		}
 	}
 }

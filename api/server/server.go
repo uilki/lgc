@@ -227,7 +227,7 @@ func (s *Server) handleConnect(ctx context.Context) http.HandlerFunc {
 		}
 
 		newParticipant := &participant{
-			name: s.user[id].name,
+			uuid: id,
 			conn: conn,
 			mes:  make(chan []byte, 256),
 		}
@@ -248,7 +248,7 @@ func (s *Server) handleActiveUsers(ctx context.Context) http.HandlerFunc {
 		activeUsers := ActiveUsersResponce{ActiveUsers: make([]string, len(controller.chatroom))}
 		i := 0
 		for c := range controller.chatroom {
-			activeUsers.ActiveUsers[i] = c.name
+			activeUsers.ActiveUsers[i] = s.user[c.uuid].name
 			i++
 		}
 
@@ -305,19 +305,30 @@ func Run(pass string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, os.Interrupt, syscall.SIGTERM)
+
+	// run controller
+	controllerCtx, controllerCancel := context.WithCancel(context.Background())
+	controllerCtx = context.WithValue(controllerCtx, serverKey, &defaultServer)
+	controller := newDispatcher()
+	go controller.run(controllerCtx)
 	go func() {
 		sig := <-exit
 		ctx.Value(serverKey).(*Server).log(INFO, fmt.Sprintf("Signal %v caught", sig))
 		cancel()
+		defaultServer.wg.Wait() // wait for connections shutdowm
+		controllerCancel()
+		os.Exit(0)
 	}()
 
-	// run controller
-	ctx = context.WithValue(ctx, serverKey, &defaultServer)
-	controller := newDispatcher()
-	go controller.run(ctx)
-
 	// setup routes
-	ctx = context.WithValue(ctx, controllerKey, controller)
+	ctx = context.WithValue(
+		context.WithValue(ctx,
+			controllerKey,
+			controller,
+		),
+		serverKey,
+		&defaultServer,
+	)
 	defaultServer.routes(ctx)
 	router := mux.NewRouter()
 	for route, handler := range defaultServer.router.routes {

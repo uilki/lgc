@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestRun(t *testing.T) {
@@ -14,12 +16,13 @@ func TestRun(t *testing.T) {
 		removePaticipant: make(chan *participant),
 	}
 
-	ctx, _ := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	ctx = context.WithValue(ctx, serverKey, &Server{})
 
 	go d.run(ctx)
-	firstParticipant := participant{mes: make(chan []byte, 256), name: "john"}
-	secondParticipant := participant{mes: make(chan []byte, 256), name: "kate"}
+	firstParticipant := participant{mes: make(chan []byte, 256), uuid: uuid.New()}
+	secondParticipant := participant{mes: make(chan []byte, 256), uuid: uuid.New()}
 	d.addParticipant <- &firstParticipant
 	d.addParticipant <- &secondParticipant
 
