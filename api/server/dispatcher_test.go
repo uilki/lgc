@@ -18,11 +18,13 @@ func TestRun(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ctx = context.WithValue(ctx, serverKey, &Server{})
-
-	go d.run(ctx)
+	s := &Server{user: make(map[uuid.UUID]*userInfo)}
 	firstParticipant := participant{mes: make(chan []byte, 256), uuid: uuid.New()}
 	secondParticipant := participant{mes: make(chan []byte, 256), uuid: uuid.New()}
+	s.user[firstParticipant.uuid], s.user[secondParticipant.uuid] = &userInfo{logged: false}, &userInfo{logged: false}
+	ctx = context.WithValue(ctx, serverKey, s)
+
+	go d.run(ctx)
 	d.addParticipant <- &firstParticipant
 	d.addParticipant <- &secondParticipant
 
@@ -54,10 +56,11 @@ func TestRun(t *testing.T) {
 	}
 
 	d.removePaticipant <- &secondParticipant
+
 	time.Sleep(time.Millisecond)
 
 	if chatRoomLen := len(d.chatroom); chatRoomLen != 0 {
 		t.Errorf("chatroom expected len %d, actual %d", 0, chatRoomLen)
 	}
-
+	d.removePaticipant <- &firstParticipant
 }

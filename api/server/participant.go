@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	pb "github.com/uilki/lgc/api/server/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -47,17 +49,17 @@ func (c *participant) readMessages(ctx context.Context) {
 			break
 		}
 
-		backlogMes := Message{
-			TimeStamp: time.Unix(time.Now().Unix(), 0).UTC(),
+		backlogMes := pb.Message{
+			TimeStamp: time.Unix(time.Now().Unix(), 0).UTC().String(),
 			Name:      srv.user[c.uuid].name,
 			Message:   string(message),
 		}
 
-		if err = srv.history.Update(backlogMes); err != nil {
+		if err = srv.history.Update(&backlogMes); err != nil {
 			srv.log(ERROR, err.Error())
 		}
 
-		message, err = marshalValue(backlogMes)
+		message, err = proto.Marshal(&backlogMes)
 		if err != nil {
 			srv.log(ERROR, err.Error())
 			continue
@@ -91,13 +93,8 @@ func (c *participant) writeMessages(ctx context.Context) {
 			}
 			w.Write(message)
 
-			n := len(c.mes)
-			for i := 0; i < n; i++ {
-				w.Write(newline)
-				w.Write(<-c.mes)
-			}
-
 			if err := w.Close(); err != nil {
+				srv.log(ERROR, err.Error())
 				return
 			}
 		case <-ticker.C:

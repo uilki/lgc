@@ -3,7 +3,8 @@ package server
 import (
 	"database/sql"
 	"fmt"
-	"time"
+
+	pb "github.com/uilki/lgc/api/server/generated"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -40,7 +41,7 @@ type sqlBacklog struct {
 func NewSqlBacklog(pass string) (*sqlBacklog, error) {
 	var backlog sqlBacklog
 	var err error
-	
+
 	backlog.db, err = sql.Open("mysql", fmt.Sprintf(openDb, pass))
 	if err != nil {
 		return nil, err
@@ -74,15 +75,15 @@ func NewSqlBacklog(pass string) (*sqlBacklog, error) {
 }
 
 func (b *sqlBacklog) Close() {
-        b.db.Close()
+	b.db.Close()
 }
 
-func (b *sqlBacklog) Update(m Message) (err error) {
-	_, err = b.db.Exec(fmt.Sprintf(addMessage, tbName, m.Name, m.TimeStamp.Format(time.RFC850), m.Message))
+func (b *sqlBacklog) Update(m *pb.Message) (err error) {
+	_, err = b.db.Exec(fmt.Sprintf(addMessage, tbName, m.Name, m.TimeStamp, m.Message))
 	return
 }
 
-func (b *sqlBacklog) GetHistory() (history []Message, err error) {
+func (b *sqlBacklog) GetHistory() (history []pb.Message, err error) {
 	var rows *sql.Rows
 	rows, err = b.db.Query(fmt.Sprintf(selectAll, tbName))
 	if err != nil {
@@ -90,18 +91,13 @@ func (b *sqlBacklog) GetHistory() (history []Message, err error) {
 	}
 
 	for rows.Next() {
-		m := Message{}
-		var timestamp string
 		var id int
-		if err = rows.Scan(&id, &m.Name, &timestamp, &m.Message); err != nil {
+		var n, t, m string
+		if err = rows.Scan(&id, &n, &t, &m); err != nil {
 			return nil, err
 		}
 
-		if m.TimeStamp, err = time.Parse(time.RFC850, timestamp); err != nil {
-			return nil, err
-		}
-
-		history = append(history, m)
+		history = append(history, pb.Message{Name: n, TimeStamp: t, Message: m})
 	}
 
 	return history, nil

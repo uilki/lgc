@@ -11,12 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/hasher"
-	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
-	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger/mock_logger"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	pb "github.com/uilki/lgc/api/server/generated"
+	"github.com/uilki/lgc/pkg/hasher"
+	"github.com/uilki/lgc/pkg/logger"
+	"github.com/uilki/lgc/pkg/logger/mock_logger"
+	"google.golang.org/protobuf/proto"
 )
 
 func checkStatusCode(t *testing.T, rw *httptest.ResponseRecorder, expected int, testCase string) {
@@ -233,14 +235,16 @@ func TestHandleConnect(t *testing.T) {
 }
 
 func TestHandleActiveUsers(t *testing.T) {
-	var s Server
+	s := Server{user: make(map[uuid.UUID]*userInfo)}
+	p1, p2 := participant{uuid: uuid.New()}, participant{uuid: uuid.New()}
+	s.user[p1.uuid], s.user[p2.uuid] = &userInfo{name: "john"}, &userInfo{name: "kate"}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(context.WithValue(ctx, serverKey, &s), controllerKey, newDispatcher())
 
 	ctx.Value(controllerKey).(*dispatcher).chatroom = make(map[*participant]bool)
-	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{uuid: uuid.New()}] = true
-	ctx.Value(controllerKey).(*dispatcher).chatroom[&participant{uuid: uuid.New()}] = true
+	ctx.Value(controllerKey).(*dispatcher).chatroom[&p1] = true
+	ctx.Value(controllerKey).(*dispatcher).chatroom[&p2] = true
 
 	handler := http.HandlerFunc(s.handleActiveUsers(ctx))
 
@@ -319,14 +323,14 @@ func TestLog(t *testing.T) {
 func TestSendTail(t *testing.T) {
 	var s Server
 	s.history = Backlogger(&backlog{})
-	s.history.Update(Message{Name: "john"})
-	s.history.Update(Message{Name: "kate"})
+	s.history.Update(&pb.Message{Name: "john"})
+	s.history.Update(&pb.Message{Name: "kate"})
 	user := participant{mes: make(chan []byte, 256)}
 
 	s.sendTail(&user)
 	history, _ := s.history.GetHistory()
-	for _, m := range history {
-		message, _ := marshalValue(m)
+	for i := 0; i < len(history); i++ {
+		message, _ := proto.Marshal(&history[i])
 
 		if actual, ok := <-user.mes; !ok || string(message) != string(actual) {
 			t.Errorf("expected %s, got %s", string(message), string(actual))

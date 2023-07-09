@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+
+	pb "github.com/uilki/lgc/api/server/generated"
 )
 
 func TestPushBack(t *testing.T) {
 	bl := backlog{}
 	for i := 0; i < backLogMaxLen+1; i++ {
-		bl.pushBack(Message{Name: fmt.Sprintf("%d", i)})
+		bl.pushBack(&pb.Message{Name: fmt.Sprintf("%d", i)})
 	}
 
 	if len(bl.data) > backLogMaxLen {
@@ -26,7 +28,7 @@ func generate[T any](s *[]T, count int, g func(n int) T) {
 func TestTail(t *testing.T) {
 	bl := backlog{}
 	for i := 0; i < backLogMaxLen; i++ {
-		bl.pushBack(Message{Name: fmt.Sprintf("%d", i)})
+		bl.pushBack(&pb.Message{Name: fmt.Sprintf("%d", i)})
 	}
 	var expected []string
 	generate(&expected, backLogTail, func(n int) string { return strconv.Itoa(backLogMaxLen - backLogTail + n) })
@@ -44,7 +46,7 @@ func TestTail(t *testing.T) {
 
 func benchmarkPushBack(bl *backlog, b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		bl.pushBack(Message{Name: fmt.Sprintf("%d", i)})
+		bl.pushBack(&pb.Message{Name: fmt.Sprintf("%d", i)})
 	}
 }
 
@@ -54,6 +56,6 @@ func BenchmarkPushBack(b *testing.B) {
 }
 
 func BenchmarkPushBackFull(b *testing.B) {
-	bl := backlog{data: make([]Message, backLogMaxLen)}
+	bl := backlog{data: make([]pb.Message, backLogMaxLen)}
 	benchmarkPushBack(&bl, b)
 }

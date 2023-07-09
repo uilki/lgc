@@ -1,0 +1,12 @@
+syntax = "proto3";
+package server;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "./generated";
+
+message Message {
+    string TimeStamp = 1;
+	string Name      = 2;
+	string Message   = 3;
+}

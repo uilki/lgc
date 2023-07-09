@@ -11,12 +11,13 @@ import (
 	"syscall"
 	"time"
 
-	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/hasher"
-	"git.epam.com/vadym_ulitin/lets-go-chat/pkg/logger"
 	"github.com/google/uuid"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/uilki/lgc/pkg/hasher"
+	"github.com/uilki/lgc/pkg/logger"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -182,8 +183,8 @@ func (s *Server) sendTail(c *participant) {
 		return
 	}
 
-	for _, m := range messages {
-		message, err := marshalValue(m)
+	for i := 0; i < len(messages); i++ {
+		message, err := proto.Marshal(&messages[i])
 
 		if err != nil {
 			s.log(ERROR, err.Error())
@@ -288,18 +289,34 @@ func init() {
 	defaultServer.router.routes = make(map[routeInfo]http.HandlerFunc)
 }
 
-func Run(pass string) error {
-	// setup history
-	if pass != "" {
-		sqlBacklog, err := NewSqlBacklog(pass)
-		if err != nil {
-			panic(err)
-		}
-		defaultServer.history = Backlogger(sqlBacklog)
-	} else {
-		defaultServer.history = Backlogger(&backlog{})
+func NewServer(backlog Backlogger) *Server {
+	return &Server{
+		url:     getLocalIP() + ":8080",
+		user:    make(map[uuid.UUID]*userInfo),
+		router:  Router{routes: make(map[routeInfo]http.HandlerFunc)},
+		history: backlog,
+		logger:  logger.Logger(logger.NewLogger()),
+		wg:      sync.WaitGroup{},
 	}
-	defer defaultServer.history.Close()
+}
+
+func Run(s *Server) error {
+	// s, err := wired.InitializeServer(pass)
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// setup history
+	/* 	if pass != "" {
+	   		sqlBacklog, err := NewSqlBacklog(pass)
+	   		if err != nil {
+	   			panic(err)
+	   		}
+	   		defaultServer.history = Backlogger(sqlBacklog)
+	   	} else {
+	   		defaultServer.history = Backlogger(&backlog{})
+	   	}
+	*/defer s.history.Close()
 
 	// setup shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -308,14 +325,14 @@ func Run(pass string) error {
 
 	// run controller
 	controllerCtx, controllerCancel := context.WithCancel(context.Background())
-	controllerCtx = context.WithValue(controllerCtx, serverKey, &defaultServer)
+	controllerCtx = context.WithValue(controllerCtx, serverKey, &s)
 	controller := newDispatcher()
 	go controller.run(controllerCtx)
 	go func() {
 		sig := <-exit
 		ctx.Value(serverKey).(*Server).log(INFO, fmt.Sprintf("Signal %v caught", sig))
 		cancel()
-		defaultServer.wg.Wait() // wait for connections shutdowm
+		s.wg.Wait() // wait for connections shutdowm
 		controllerCancel()
 		os.Exit(0)
 	}()
@@ -327,15 +344,15 @@ func Run(pass string) error {
 			controller,
 		),
 		serverKey,
-		&defaultServer,
+		&s,
 	)
-	defaultServer.routes(ctx)
+	s.routes(ctx)
 	router := mux.NewRouter()
-	for route, handler := range defaultServer.router.routes {
-		router.Handle(route.route, defaultServer.handlePanic(handler)).Methods(route.method).Headers(*route.headers...)
+	for route, handler := range s.router.routes {
+		router.Handle(route.route, s.handlePanic(handler)).Methods(route.method).Headers(*route.headers...)
 	}
 
 	// run sserver
-	defaultServer.log(INFO, fmt.Sprintf("Starting server on %s", defaultServer.url))
-	return http.ListenAndServe(defaultServer.url, handlers.LoggingHandler(os.Stdout, router))
+	s.log(INFO, fmt.Sprintf("Starting server on %s", s.url))
+	return http.ListenAndServe(s.url, handlers.LoggingHandler(os.Stdout, router))
 }

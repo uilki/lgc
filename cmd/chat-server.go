@@ -4,7 +4,8 @@ import (
 	"log"
 	"os"
 
-	"git.epam.com/vadym_ulitin/lets-go-chat/api/server"
+	"github.com/uilki/lgc/api/server"
+	"github.com/uilki/lgc/api/wired"
 )
 
 func main() {
@@ -12,5 +13,10 @@ func main() {
 	if len(os.Args[1:]) == 1 {
 		pass = os.Args[1]
 	}
-	log.Fatal(server.Run(pass))
+	s, err := wired.InitializeServer(pass)
+	if err != nil {
+		panic(err)
+	}
+
+	log.Fatal(server.Run(s))
 }

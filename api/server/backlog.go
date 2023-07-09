@@ -4,6 +4,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	pb "github.com/uilki/lgc/api/server/generated"
 )
 
 const (
@@ -19,21 +21,22 @@ type Message struct {
 
 type backlog struct {
 	mu   sync.Mutex
-	data []Message
+	data []pb.Message
 }
 
-func (b *backlog) GetHistory() ([]Message, error) {
+func (b *backlog) GetHistory() ([]pb.Message, error) {
 	return b.tail(), nil
 }
 
-func (b *backlog) Update(m Message) error {
+func (b *backlog) Update(m *pb.Message) error {
 	b.pushBack(m)
 	return nil
 }
+
 func (b *backlog) Close() {
 }
 
-func (b *backlog) pushBack(m Message) {
+func (b *backlog) pushBack(m *pb.Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -41,10 +44,10 @@ func (b *backlog) pushBack(m Message) {
 		b.data = b.data[1:]
 	}
 
-	b.data = append(b.data, m)
+	b.data = append(b.data, pb.Message{Name: m.Name, TimeStamp: m.TimeStamp, Message: m.Message})
 }
 
-func (b *backlog) tail() []Message {
+func (b *backlog) tail() []pb.Message {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
